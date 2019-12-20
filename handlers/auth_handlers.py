@@ -1,17 +1,20 @@
 import jwt
-
+import json
+import sqlalchemy as sa
 from aiohttp import web
 from datetime import datetime, timedelta
-from models.users import users
+from models.users import users, companies, users_groups
+from collections import OrderedDict
+import psycopg2.extras
+from passlib.hash import pbkdf2_sha512
 
-
-JWT_EXP_DELTA_SECONDS = 20
+JWT_EXP_DELTA_SECONDS = 60
 JWT_ALGORITHM = 'HS256'
 secret = 'secret'
 
 async def get_account_counters(request):
     account_id, company_id = request.match_info['account_id__company_id'].split('__')
-    print(account_id, company_id)
+    #print(account_id, company_id)
     date = datetime.now().strftime("%d.%m.%Y")
     user_counters_data = {
         'counters': {
@@ -86,17 +89,40 @@ async def put_counter_data(request):
     print(put_data['input-counter-id'])
     return web.Response(status=200)
 
+async def check_address(street, house, appartment, db_result):
+    if street != db_result.Users_street:
+        return False, 'Улица не соответствует лицевому счету !', 'Убедитесь, что Вы вводите верный лицевой счет и адрес'
+    if house != db_result.Users_house:
+        return False, 'Номер дома не соответствует лицевому счету!', 'Убедитесь, что Вы вводите верный лицевой счет и адрес'
+    if appartment != db_result.Users_appartment:
+        return False, 'Номер квартиры не соответствует лицевому счету!', 'Убедитесь, что Вы вводите верный лицевой счет и адрес'
+    return True, '', ''
+
 async def login(request):
     post_data = await request.json()
     db = request.app['db']
-    print(post_data['account'], post_data['defpass'])
-    async with db.acquire() as conn:
-        result = await conn.execute(
-            users.select().
-            where(users.c.username == post_data['account'], users.c.defpass == post_data['defpass']))
-        us = await result.first()
-
-    print(us)
+    async with db.acquire() as conn:        
+        join_company = sa.join(users, companies, companies.c.id == users.c.company)
+        join = join_company.join(users_groups, users_groups.c.id == users.c.group)
+        query = sa.select([users, companies, users_groups], use_labels=True).select_from(join).where(users.c.account == post_data['account'])
+        db_result = await conn.execute(query)
+        result = await db_result.fetchone()
+    if result and pbkdf2_sha512.verify(post_data['defpass'], result[2].hash):
+        address_check, error, recomend = await check_address(post_data['street'], post_data['house'], post_data['appartment'], result)
+        if not address_check:
+            return web.json_response({'error_message': error, 'error_recomend': recomend}, status=401)
+        json_response = users.db_result_to_json(result, key_values=['account', 'street', 'house', 'appartment', 'company', 'group'])
+        payload = {
+            'user': json_response,
+            'exp': datetime.utcnow() + timedelta(seconds=JWT_EXP_DELTA_SECONDS)
+        }
+        token = jwt.encode(payload, secret, JWT_ALGORITHM)
+        del json_response['group']
+        return web.json_response({'token': token.decode('utf-8'), 'user': json_response})
+    elif not result:
+        json_response = {'error_message': 'Лицевой счет не найден !', 'error_recomend': 'Убедитесь что вы ввели верный лицевой счет'}
+        return web.json_response(json_response, status=401)
+    """    
     user = {
         'account': post_data['account'],
         'street': post_data['street'],
@@ -107,15 +133,8 @@ async def login(request):
             'company_name': 'Комфортный дом'
         },
         'attention_message': '',
-    }
-    payload = {
-        'user': user,
-        'exp': datetime.utcnow() + timedelta(seconds=JWT_EXP_DELTA_SECONDS)
-    }
-    token = jwt.encode(payload, secret, JWT_ALGORITHM)
-    if post_data['account'] == '555':
-        return web.json_response({'error_message': 'Неверный логин или адрес'}, status=401)
-    return web.json_response({'token': token.decode('utf-8'), 'user': user})
+    }"""
+    
 
 
     

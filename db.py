@@ -13,12 +13,17 @@ async def drop_tables(engine, tables):
         for table in tables:
             await conn.execute(DropTable(table))
 
+async def insert_values(engine, table, **kwargs):
+    async with engine.acquire() as conn:
+        await conn.execute(table.insert().values(**kwargs))
+
 async def init_db_engine(app=None, in_app=True):
     engine = await create_engine(
         user='counters_api_db_admin',
         database='counters_api_db',
         host='127.0.0.1',
-        password='Zx3FaER_d'
+        password='Zx3FaER_d',
+        enable_json=True
     )
     if in_app:
         app['db'] = engine
