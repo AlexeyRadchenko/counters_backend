@@ -133,3 +133,6 @@ dmypy.json
 
 #todo
 todo
+
+#config
+config/
